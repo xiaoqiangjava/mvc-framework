@@ -1,6 +1,4 @@
-package com.xq.learn.annotation;
-
-import com.xq.learn.model.RequestMethod;
+package com.xq.learn.model;
 
 import java.lang.reflect.Method;
 

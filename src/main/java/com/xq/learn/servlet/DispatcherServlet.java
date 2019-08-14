@@ -1,8 +1,12 @@
 package com.xq.learn.servlet;
 
+import com.alibaba.fastjson.JSONObject;
 import com.xq.learn.annotation.Autowired;
 import com.xq.learn.annotation.Controller;
-import com.xq.learn.annotation.HandlerMapping;
+import com.xq.learn.annotation.RequestBody;
+import com.xq.learn.annotation.RequestParam;
+import com.xq.learn.annotation.ResponseBody;
+import com.xq.learn.model.HandlerMapping;
 import com.xq.learn.annotation.RequestMapping;
 import com.xq.learn.annotation.Service;
 import com.xq.learn.model.RequestMethod;
@@ -19,7 +23,9 @@ import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -34,6 +40,8 @@ import java.util.Properties;
  */
 public class DispatcherServlet extends HttpServlet
 {
+    private static final String CONTENT_TYPE = "application/json;charset=UTF-8";
+
     private Properties contextConfig = new Properties();
 
     private List<String> classNames = new ArrayList<>();
@@ -61,12 +69,18 @@ public class DispatcherServlet extends HttpServlet
         processRequest(req, resp);
     }
 
-    private void processRequest(HttpServletRequest req, HttpServletResponse resp) throws IOException
+    private void processRequest(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException
     {
         doDispatcher(req, resp);
     }
 
-    private void doDispatcher(HttpServletRequest req, HttpServletResponse resp) throws IOException
+    /**
+     * 分发请求，将相应的请求分发到对应的controller进行处理。
+     * @param req req
+     * @param resp resp
+     * @throws IOException IOException
+     */
+    private void doDispatcher(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException
     {
         if (mappingMap.isEmpty())
         {
@@ -76,7 +90,7 @@ public class DispatcherServlet extends HttpServlet
         String url = req.getRequestURI();
         String contextPath = req.getContextPath();
         url.replace(contextPath, "").replaceAll("/+", "/");
-
+        // 请求的URL不匹配，返回404
         if (!mappingMap.containsKey(url))
         {
             PrintWriter writer = resp.getWriter();
@@ -84,8 +98,6 @@ public class DispatcherServlet extends HttpServlet
             writer.flush();
             return;
         }
-        // 获取请求参数
-        Map<String, String[]> parameters = req.getParameterMap();
 
         // 获取URL匹配的HandlerMapping对象
         List<HandlerMapping> handlerMappings = mappingMap.get(url);
@@ -99,10 +111,21 @@ public class DispatcherServlet extends HttpServlet
                     Method method = mapping.getMethod();
                     // 获取当前对象
                     String beanName = lowerFirstCase(method.getDeclaringClass().getSimpleName());
-
+                    // 获取参数列表，spring通过读取字节码获取方法参数名称，JDK1.8提供了通过反射获取方法参数名称的方法
+                    Object[] args = getMethodParameters(req, resp, method);
                     try
                     {
-                        method.invoke(ioc.get(beanName), req, parameters.get("id")[0]);
+                        // 反射调用方法，这里可以加入interceptor
+                        Object result = method.invoke(ioc.get(beanName), args);
+                        if (method.isAnnotationPresent(ResponseBody.class))
+                        {
+                            // @ResponseBody注解的方法，返回值为json
+                            resp.setContentType(CONTENT_TYPE);
+                            PrintWriter writer = resp.getWriter();
+                            writer.write(JSONObject.toJSONString(result));
+                            writer.flush();
+                            return;
+                        }
                     }
                     catch (IllegalAccessException e)
                     {
@@ -112,7 +135,7 @@ public class DispatcherServlet extends HttpServlet
                     {
                         e.printStackTrace();
                     }
-                    break;
+                    return;
                 }
             }
         }
@@ -185,7 +208,6 @@ public class DispatcherServlet extends HttpServlet
                 }
             }
         }
-
     }
 
     private void doAutowired() throws IllegalAccessException
@@ -324,6 +346,74 @@ public class DispatcherServlet extends HttpServlet
                 }
             }
         }
+    }
+
+    /**
+     * 获取方法参数列表
+     * @param req req
+     * @param resp resp
+     * @param method method
+     * @return args
+     */
+    private Object[] getMethodParameters(HttpServletRequest req, HttpServletResponse resp, Method method) throws ServletException, IOException
+    {
+        // 获取请求参数
+        Map<String, String[]> parameters = req.getParameterMap();
+        // 获取方法参数列表
+        Parameter[] methodParameters = method.getParameters();
+        int paramCount = method.getParameterCount();
+        Object[] args = new Object[paramCount];
+        for (int i = 0; i < paramCount; i++)
+        {
+            Parameter parameter = methodParameters[i];
+            // 根据类型，注入req和resp
+            if (parameter.getType().getTypeName().equals(HttpServletRequest.class.getName()))
+            {
+                args[i] = req;
+                continue;
+            }
+            if (parameter.getType().getTypeName().equals(HttpServletResponse.class.getName()))
+            {
+                args[i] = resp;
+                continue;
+            }
+            // 默认注入请求参数名称和方法参数名称相同的参数
+            if (parameters.containsKey(parameter.getName()))
+            {
+                args[i] = String.join(",", parameters.get(parameter.getName()));
+            }
+            // 根据注解，注入参数
+            if (parameter.isAnnotationPresent(RequestParam.class))
+            {
+                // 注入@RequestParam注解的参数
+                RequestParam requestParam = parameter.getAnnotation(RequestParam.class);
+                String name = "".equals(requestParam.value()) ? parameter.getName() : requestParam.value();
+                if (parameters.containsKey(name))
+                {
+                    args[i] = String.join(",", parameters.get(name));
+                }
+                else
+                {
+                    if (requestParam.required())
+                    {
+                        // @RequestParam直接的参数为必须值时，没有指定则报错
+                        throw new ServletException("Parameter" + name + " is not present.");
+                    }
+                }
+            }
+            else if (parameter.isAnnotationPresent(RequestBody.class))
+            {
+                // 注入@ResponseBody注解的参数, 将req中的值反序列化到object中
+                Object object = JSONObject.parseObject(req.getInputStream(), StandardCharsets.UTF_8, parameter.getType());
+                args[i] = object;
+            }
+            else
+            {
+                // doNothing
+            }
+        }
+
+        return args;
     }
 
     private String lowerFirstCase(String name)

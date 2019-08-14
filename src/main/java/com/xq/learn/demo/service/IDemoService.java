@@ -6,4 +6,9 @@ package com.xq.learn.demo.service;
  */
 public interface IDemoService
 {
+    String get(String id);
+
+    String add(String body);
+
+    String delete(String id);
 }
