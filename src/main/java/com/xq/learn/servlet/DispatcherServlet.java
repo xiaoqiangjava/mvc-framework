@@ -71,7 +71,19 @@ public class DispatcherServlet extends HttpServlet
 
     private void processRequest(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException
     {
-        doDispatcher(req, resp);
+        // 分发请求，捕获异常信息，对调用结果进行处理
+        Exception dispatchException = null;
+        try
+        {
+            doDispatcher(req, resp);
+        }
+        catch (Exception ex)
+        {
+            dispatchException = ex;
+            dispatchException.printStackTrace();
+        }
+        // 调用结束后处理返回结果，当有异常发生时，会触发注册的ExceptionHandler来处理相应的异常，404请求不会产生异常
+//        processDispatchResult(req, resp, dispatchException);
     }
 
     /**
@@ -80,7 +92,7 @@ public class DispatcherServlet extends HttpServlet
      * @param resp resp
      * @throws IOException IOException
      */
-    private void doDispatcher(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException
+    private void doDispatcher(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
         if (mappingMap.isEmpty())
         {
@@ -133,7 +145,25 @@ public class DispatcherServlet extends HttpServlet
                     }
                     catch (InvocationTargetException e)
                     {
+                        // 反射调用方法时，如果调用方法内部抛出异常，则在这里捕获
                         e.printStackTrace();
+                        Throwable targetException = e.getTargetException();
+                        if (targetException instanceof RuntimeException)
+                        {
+                            throw (RuntimeException) targetException;
+                        }
+                        else if (targetException instanceof Error)
+                        {
+                            throw (Error) targetException;
+                        }
+                        else if (targetException instanceof Exception)
+                        {
+                            throw (Exception) targetException;
+                        }
+                        else
+                        {
+                            throw new IllegalStateException("Invocation failure", targetException);
+                        }
                     }
                     return;
                 }
